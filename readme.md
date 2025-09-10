@@ -6,3 +6,6 @@ make clean && make package  FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
 
 ## rootful compile
 make clean && make package  FINALPACKAGE=1
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
