@@ -1,0 +1,9 @@
+Package: com.rainl.antiptrace
+Name: antiPtrace
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: remove 反调试
+Maintainer: rainl
+Author: rainl
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000)
