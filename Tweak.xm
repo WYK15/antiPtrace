@@ -1,15 +1,9 @@
 // See http://iphonedevwiki.net/index.php/Logos
 
-
-#include <substrate.h>
-#include <fcntl.h>
-#include <unistd.h>
 #import <Foundation/Foundation.h>
+#include <substrate.h>
 #import <sys/sysctl.h>
-#import <dlfcn.h>
 #import <mach-o/dyld.h>
-#import <sqlite3.h>
-#include<sys/socket.h>
 
 
 extern "C" int isatty(int code);
@@ -20,18 +14,15 @@ extern "C" int ptrace(int _request, pid_t _pid, caddr_t _addr, int _data);
 extern "C" void* dlsym(void* __handle, const char* __symbol);
 extern "C" int sysctl(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize);
 extern "C" int syscall(int, ...);
-extern "C" int dladdr(const void *, Dl_info *);
 
 
 static int (*origin_isatty)(int code);
 static void (*origin_exit)(int code);
 static int (*origin_ioctl)(int code,unsigned long code2,...);
-
 static int (*origin_ptrace)(int _request, pid_t _pid, caddr_t _addr, int _data);
 static void* (*origin_dlsym)(void* __handle, const char* __symbol);
 static int (*origin_sysctl)(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize);
 static int (*origin_syscall)(int code, va_list args);
-static int (*origin_dladdr)(const void * im, Dl_info * inf);
 
 
 int new_isatty(int code) {
@@ -43,19 +34,7 @@ int new_isatty(int code) {
 
 void new_exit(int code) {
     
-    /*
-    long slide = _dyld_get_image_vmaddr_slide(0);
-    unsigned long addr = (unsigned long)origin_exit;
-    intptr_t origin_addr = addr - slide;
-    
-    //NSString *s = [NSString stringWithFormat:@"exit : %x",origin_addr];
-    
-    
-    NSArray<NSString *> *callstack = [NSThread callStackSymbols];
-    for (NSString *st in callstack) {
-    }
-    
-        */
+    NSLog(@"hook exit to nop");
 }
 
 int my_ptrace(int _request, pid_t _pid, caddr_t _addr, int _data){
@@ -125,7 +104,7 @@ int my_syscall(int code, va_list args){
 }
 
 int new_ioctl(int code,unsigned long code2,...) {
-
+    NSLog(@"ioctl, code : %d, (check Debugging?)",code);
     return 1;
 }
 
@@ -181,7 +160,7 @@ void patchSVC(){
 
     NSLog(@"executeName : %@", executeName);
 
-    struct mach_header* executeHeader;
+    struct mach_header* executeHeader = NULL;
     int64_t executeSlide = 0;
     for(int i = 0; i < _dyld_image_count(); i++) {
         const char *image_name = _dyld_get_image_name(i);
@@ -191,6 +170,7 @@ void patchSVC(){
             NSLog(@"image_name_str1 : %@", image_name_str);
             executeHeader = (struct mach_header*)_dyld_get_image_header(i);
             executeSlide = _dyld_get_image_vmaddr_slide(i);
+            break;
         }
     }
 
