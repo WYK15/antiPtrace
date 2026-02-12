@@ -5,6 +5,8 @@
 #import <sys/sysctl.h>
 #import <mach-o/dyld.h>
 
+#define slog(fmt, ...) NSLog(@"antiPtrace: " fmt, ##__VA_ARGS__)
+
 
 extern "C" int isatty(int code);
 extern "C" void exit(int code);
@@ -14,6 +16,7 @@ extern "C" int ptrace(int _request, pid_t _pid, caddr_t _addr, int _data);
 extern "C" void* dlsym(void* __handle, const char* __symbol);
 extern "C" int sysctl(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize);
 extern "C" int syscall(int, ...);
+extern "C" pid_t getppid(void);
 
 
 static int (*origin_isatty)(int code);
@@ -23,6 +26,7 @@ static int (*origin_ptrace)(int _request, pid_t _pid, caddr_t _addr, int _data);
 static void* (*origin_dlsym)(void* __handle, const char* __symbol);
 static int (*origin_sysctl)(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize);
 static int (*origin_syscall)(int code, va_list args);
+static pid_t (*origin_getppid)(void);
 
 
 int new_isatty(int code) {
@@ -62,19 +66,36 @@ typedef struct kinfo_proc _kinfo_proc;
 
 // 修改不稳定？
 int my_sysctl(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize){
-    
    if(namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC && name[2] == KERN_PROC_PID && info && infosize && ((int)*infosize == sizeof(_kinfo_proc))){
+        
+        return -1;
+        /*
+        if(name[3] != getpid()){
+            name[3] = 1;
+        }
+
+        for(int i = 0; i < namelen; i++){
+            slog(@"name[%d] = %d", i, name[i]);
+        }
+        slog(@"info = %p, infosize = %d", info, (int)*infosize);
+        // print sizeof(_kinfo_proc)
+        slog(@"sizeof(_kinfo_proc) = %zd", sizeof(_kinfo_proc));
+
         int ret = origin_sysctl(name, namelen, info, infosize, newinfo, newinfosize);
         struct kinfo_proc *info_ptr = (struct kinfo_proc *)info;
+
+        slog(@"kp_proc.p_flag = %d", info_ptr->kp_proc.p_flag);
+
         if(info_ptr && (info_ptr->kp_proc.p_flag & P_TRACED) != 0){
-            NSLog(@"[AntiAntiDebug] - sysctl query trace status.");
-            info_ptr->kp_proc.p_flag ^= P_TRACED;
+            slog(@"[AntiAntiDebug] - sysctl query trace status.");
+            info_ptr->kp_proc.p_flag &= ~P_TRACED;
             if((info_ptr->kp_proc.p_flag & P_TRACED) == 0){
-                NSLog(@"trace status reomve success!");
+                slog(@"trace status reomve success!");
             }
         }
-    
+        
         return ret;
+        */
     }
     return origin_sysctl(name, namelen, info, infosize, newinfo, newinfosize);
 }
@@ -105,6 +126,11 @@ int my_syscall(int code, va_list args){
 
 int new_ioctl(int code,unsigned long code2,...) {
     NSLog(@"ioctl, code : %d, (check Debugging?)",code);
+    return 1;
+}
+
+pid_t new_getppid(void){
+    slog(@"[AntiAntiDebug] - getppid called, return 1");
     return 1;
 }
 
@@ -208,15 +234,18 @@ void patchSVC(){
 
 %ctor
 {
+    slog(@"antiPtrace tweak loaded");
+
     patchSVC();
     
     MSHookFunction((void*)&isatty,(void*)&new_isatty,(void**)&origin_isatty);
     MSHookFunction((void*)&exit,(void*)&new_exit,(void**)&origin_exit);
     MSHookFunction((void*)&ioctl,(void*)&new_ioctl,(void**)&origin_ioctl);
-
+    
 
     MSHookFunction((void*)&ptrace,(void*)&my_ptrace,(void**)&origin_ptrace);
     MSHookFunction((void*)&dlsym,(void*)&my_dlsym,(void**)&origin_dlsym);
     MSHookFunction((void*)&sysctl,(void*)&my_sysctl,(void**)&origin_sysctl);
     MSHookFunction((void*)&syscall,(void*)&my_syscall,(void**)&origin_syscall);
+    MSHookFunction((void*)&getppid,(void*)&new_getppid,(void**)&origin_getppid);
 }
