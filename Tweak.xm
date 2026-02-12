@@ -4,6 +4,11 @@
 #include <substrate.h>
 #import <sys/sysctl.h>
 #import <mach-o/dyld.h>
+#import <mach/mach.h>
+#import <dlfcn.h>
+#import <pthread.h>
+#import <signal.h>
+
 
 #define slog(fmt, ...) NSLog(@"antiPtrace: " fmt, ##__VA_ARGS__)
 
@@ -17,8 +22,14 @@ extern "C" void* dlsym(void* __handle, const char* __symbol);
 extern "C" int sysctl(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize);
 extern "C" int syscall(int, ...);
 extern "C" pid_t getppid(void);
-
-
+extern "C" int sigaction(int sig, const struct sigaction * __restrict act, struct sigaction * __restrict oact);
+static kern_return_t (*origin_task_set_exception_ports)(
+    task_t task,
+    exception_mask_t exception_mask,
+    mach_port_t new_port,
+    exception_behavior_t behavior,
+    thread_state_flavor_t flavor
+);
 static int (*origin_isatty)(int code);
 static void (*origin_exit)(int code);
 static int (*origin_ioctl)(int code,unsigned long code2,...);
@@ -27,18 +38,19 @@ static void* (*origin_dlsym)(void* __handle, const char* __symbol);
 static int (*origin_sysctl)(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize);
 static int (*origin_syscall)(int code, va_list args);
 static pid_t (*origin_getppid)(void);
+static int (*origin_sigaction)(int sig, const struct sigaction * __restrict act, struct sigaction * __restrict oact);
 
 
 int new_isatty(int code) {
     
-    NSLog(@"Leocontent tweak : isatty(ptrace)");
+    slog(@"Leocontent tweak : isatty(ptrace)");
     
     return 0;
 }
 
 void new_exit(int code) {
     
-    NSLog(@"hook exit to nop");
+    slog(@"hook exit to nop");
 }
 
 int my_ptrace(int _request, pid_t _pid, caddr_t _addr, int _data){
@@ -47,7 +59,7 @@ int my_ptrace(int _request, pid_t _pid, caddr_t _addr, int _data){
         return origin_ptrace(_request,_pid,_addr,_data);
     }
     
-    NSLog(@"Leocontent tweak : [AntiAntiDebug] - ptrace request is PT_DENY_ATTACH");
+    slog(@"Leocontent tweak : [AntiAntiDebug] - ptrace request is PT_DENY_ATTACH");
     
     return 0;
 }
@@ -57,7 +69,7 @@ void* my_dlsym(void* __handle, const char* __symbol){
     if(strcmp(__symbol, "ptrace") != 0){
         return origin_dlsym(__handle, __symbol);
     }
-    NSLog(@"Leocontent tweak : [AntiAntiDebug] - dlsym get ptrace symbol");
+    slog(@"Leocontent tweak : [AntiAntiDebug] - dlsym get ptrace symbol");
     
     return (void*)my_ptrace;
 }
@@ -67,25 +79,8 @@ typedef struct kinfo_proc _kinfo_proc;
 // 修改不稳定？
 int my_sysctl(int * name, u_int namelen, void * info, size_t * infosize, void * newinfo, size_t newinfosize){
    if(namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC && name[2] == KERN_PROC_PID && info && infosize && ((int)*infosize == sizeof(_kinfo_proc))){
-        
-        return -1;
-        /*
-        if(name[3] != getpid()){
-            name[3] = 1;
-        }
-
-        for(int i = 0; i < namelen; i++){
-            slog(@"name[%d] = %d", i, name[i]);
-        }
-        slog(@"info = %p, infosize = %d", info, (int)*infosize);
-        // print sizeof(_kinfo_proc)
-        slog(@"sizeof(_kinfo_proc) = %zd", sizeof(_kinfo_proc));
-
         int ret = origin_sysctl(name, namelen, info, infosize, newinfo, newinfosize);
         struct kinfo_proc *info_ptr = (struct kinfo_proc *)info;
-
-        slog(@"kp_proc.p_flag = %d", info_ptr->kp_proc.p_flag);
-
         if(info_ptr && (info_ptr->kp_proc.p_flag & P_TRACED) != 0){
             slog(@"[AntiAntiDebug] - sysctl query trace status.");
             info_ptr->kp_proc.p_flag &= ~P_TRACED;
@@ -95,7 +90,6 @@ int my_sysctl(int * name, u_int namelen, void * info, size_t * infosize, void * 
         }
         
         return ret;
-        */
     }
     return origin_sysctl(name, namelen, info, infosize, newinfo, newinfosize);
 }
@@ -117,7 +111,7 @@ int my_syscall(int code, va_list args){
         request = va_arg(args, int);
 #endif
         if(request == 31){
-            NSLog(@"Leocontent tweak :[AntiAntiDebug] - syscall call ptrace, and request is PT_DENY_ATTACH");
+            slog(@"Leocontent tweak :[AntiAntiDebug] - syscall call ptrace, and request is PT_DENY_ATTACH");
             return 0;
         }
     }
@@ -125,13 +119,28 @@ int my_syscall(int code, va_list args){
 }
 
 int new_ioctl(int code,unsigned long code2,...) {
-    NSLog(@"ioctl, code : %d, (check Debugging?)",code);
+    slog(@"ioctl, code : %d, (check Debugging?)",code);
     return 1;
 }
 
 pid_t new_getppid(void){
     slog(@"[AntiAntiDebug] - getppid called, return 1");
     return 1;
+}
+
+int new_sigaction(int sig, const struct sigaction * __restrict act, struct sigaction * __restrict oact){
+    //slog(@"[AntiAntiDebug] - sigaction called, sig : %d", sig);
+    return -1;
+}
+
+kern_return_t new_task_set_exception_ports(
+    task_t task,
+    exception_mask_t exception_mask,
+    mach_port_t new_port,
+    exception_behavior_t behavior,
+    thread_state_flavor_t flavor
+) {
+    return KERN_FAILURE;
 }
 
 
@@ -184,7 +193,7 @@ void patchSVC(){
     // MSImageRef image = MSGetImageByName([binaryFilepath UTF8String]);
     // const MSImageHeader *base = MSImageAddress(image); // rootless找不到MSImageAddress这个符号，报错：_dyld_missing_symbol_abort()
 
-    NSLog(@"executeName : %@", executeName);
+    slog(@"executeName : %@", executeName);
 
     struct mach_header* executeHeader = NULL;
     int64_t executeSlide = 0;
@@ -193,7 +202,7 @@ void patchSVC(){
         NSString *image_name_str = [@(image_name) lastPathComponent];
         
         if ([image_name_str isEqualToString:executeName]) {
-            NSLog(@"image_name_str1 : %@", image_name_str);
+            slog(@"image_name_str1 : %@", image_name_str);
             executeHeader = (struct mach_header*)_dyld_get_image_header(i);
             executeSlide = _dyld_get_image_vmaddr_slide(i);
             break;
@@ -201,7 +210,7 @@ void patchSVC(){
     }
 
     if (!executeHeader) {
-        NSLog(@"this is impossible!");
+        slog(@"this is impossible!");
         return;
     }
     
@@ -219,7 +228,7 @@ void patchSVC(){
     size_t pattern_size = sizeof(pattern);
     void* n2p2 = search_bytes64((void *)textStart, (size_t)textSize, pattern, pattern_size);
     if(n2p2) {
-        NSLog(@"svc ptrace(DENY_ATTACH) called 26!!!");
+        slog(@"svc ptrace(DENY_ATTACH) called 26!!!");
     }else {
         return;
     }
@@ -230,6 +239,23 @@ void patchSVC(){
     
     MSHookMemory((void*)n2p2, hack, sizeof(hack));
 }
+
+
+%hook PLCrashReporter
+- (BOOL) enableCrashReporterAndReturnError: (NSError **) outError {
+    return NO;
+}
+
+%end
+
+
+// %hook PLCrashSignalHandler
+
+// - (BOOL) registerHandlerWithSignal: (int) signo error: (NSError **) outError {
+//     return NO;
+// }
+
+// %end
 
 
 %ctor
@@ -248,4 +274,6 @@ void patchSVC(){
     MSHookFunction((void*)&sysctl,(void*)&my_sysctl,(void**)&origin_sysctl);
     MSHookFunction((void*)&syscall,(void*)&my_syscall,(void**)&origin_syscall);
     MSHookFunction((void*)&getppid,(void*)&new_getppid,(void**)&origin_getppid);
+    // MSHookFunction((void*)&sigaction,(void*)&new_sigaction,(void**)&origin_sigaction);
+    //MSHookFunction((void *)&task_set_exception_ports, (void *)&new_task_set_exception_ports,(void **)&origin_task_set_exception_ports);
 }
